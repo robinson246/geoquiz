@@ -230,6 +230,7 @@ function readStoredQuizSession() {
 function getInitialQuizSession() {
 	const storedSession = readStoredQuizSession();
 	const quiz = Array.isArray(storedSession?.quiz) ? storedSession.quiz : [];
+	const storedScore = Number.isFinite(storedSession?.score) ? storedSession.score : 0;
 	const phase =
 		(storedSession?.phase === 'playing' || storedSession?.phase === 'results') && quiz.length > 0
 			? storedSession.phase
@@ -246,7 +247,7 @@ function getInitialQuizSession() {
 		questionCount: sanitizeQuestionCount(storedSession?.questionCount),
 		allowedContinents: sanitizeAllowedContinents(storedSession?.allowedContinents),
 		currentIndex,
-		score: Number.isFinite(storedSession?.score) ? Math.max(0, storedSession.score) : 0,
+		score: Math.max(0, Math.min(storedScore, quiz.length)),
 		mistakes: Array.isArray(storedSession?.mistakes) ? storedSession.mistakes : [],
 	};
 }
@@ -288,6 +289,7 @@ export default function App() {
 	const [studyProgress, setStudyProgress] = useState({});
 	const [loadRevision, setLoadRevision] = useState(0);
 	const answerTimeoutRef = useRef(null);
+	const answerLockedRef = useRef(false);
 	const location = useLocation();
 	const navigate = useNavigate();
 
@@ -805,6 +807,7 @@ export default function App() {
 
 	function resetQuizFeedback() {
 		clearAnswerTimeout();
+		answerLockedRef.current = false;
 		setSelectedAnswer('');
 		setFeedback('');
 		setFeedbackType('');
@@ -971,7 +974,8 @@ export default function App() {
 
 	async function addLeaderboardEntry(finalScore) {
 		const total = quiz.length || questionCount;
-		const accuracy = total > 0 ? Math.round((finalScore / total) * 100) : 0;
+		const safeScore = Math.max(0, Math.min(finalScore, total));
+		const accuracy = total > 0 ? Math.round((safeScore / total) * 100) : 0;
 		const modeLabel =
 			quizMode === 'flags'
 				? 'Flags Only'
@@ -981,7 +985,7 @@ export default function App() {
 
 		const entry = {
 			id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-			score: finalScore,
+			score: safeScore,
 			total,
 			accuracy,
 			mode: modeLabel,
@@ -1072,15 +1076,16 @@ export default function App() {
 	}
 
 	function handleAnswer(choice) {
-		if (phase !== 'playing' || selectedAnswer) {
+		if (phase !== 'playing' || selectedAnswer || answerLockedRef.current) {
 			return;
 		}
 
+		answerLockedRef.current = true;
 		setSelectedAnswer(choice);
 		const isCorrect = choice === currentQuestion.answer;
 
 		if (isCorrect) {
-			setScore((value) => value + 1);
+			setScore((value) => Math.min(value + 1, quiz.length));
 			setFeedback('Correct.');
 			setFeedbackType('correct');
 		} else {
@@ -1098,9 +1103,8 @@ export default function App() {
 
 		answerTimeoutRef.current = window.setTimeout(async () => {
 			answerTimeoutRef.current = null;
-			resetQuizFeedback();
 			if (currentIndex + 1 >= quiz.length) {
-				const finalScore = isCorrect ? score + 1 : score;
+				const finalScore = Math.min(isCorrect ? score + 1 : score, quiz.length);
 				await addLeaderboardEntry(finalScore);
 				if (authToken && activeSessionId) {
 					backendApi.completeSession(activeSessionId, authToken).catch(() => {});
@@ -1108,7 +1112,9 @@ export default function App() {
 				}
 				setPhase('results');
 				navigate('/results');
+				answerLockedRef.current = false;
 			} else {
+				resetQuizFeedback();
 				const nextIndex = currentIndex + 1;
 				setCurrentIndex(nextIndex);
 				if (authToken && activeSessionId) {
@@ -1118,7 +1124,7 @@ export default function App() {
 							{
 								quiz,
 								currentIndex: nextIndex,
-								score: isCorrect ? score + 1 : score,
+								score: Math.min(isCorrect ? score + 1 : score, quiz.length),
 								mistakes: isCorrect
 									? mistakes
 									: [

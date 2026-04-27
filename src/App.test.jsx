@@ -89,6 +89,20 @@ describe('App', () => {
 		expect(screen.getByRole('button', { name: /back to menu/i })).toBeTruthy();
 	});
 
+	it('caps a restored results score at the quiz length', async () => {
+		seedQuizSession({ score: 11 });
+
+		render(
+			<MemoryRouter initialEntries={['/results']}>
+				<App />
+			</MemoryRouter>
+		);
+
+		expect(await screen.findByRole('heading', { name: /assessment complete/i })).toBeTruthy();
+		expect(screen.getByText(/you scored/i).textContent).toContain('10');
+		expect(screen.getByText('10/10')).toBeTruthy();
+	});
+
 	it('returns to the menu when quitting a quiz and cancels pending auto-advance', async () => {
 		const user = userEvent.setup();
 
