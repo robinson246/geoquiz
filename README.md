@@ -21,6 +21,10 @@ A React + Vite quiz web app for world flags and capitals.
    ```bash
    npm run dev
    ```
+3. In another terminal, start the custom backend:
+   ```bash
+   npm run dev:api
+   ```
 
 ## Quality scripts
 - Lint: `npm run lint`
@@ -37,9 +41,19 @@ GitHub Actions workflow is included at [GEOQUIZ/.github/workflows/ci.yml](.githu
 ## Environment variables
 See [GEOQUIZ/.env.example](.env.example):
 - `VITE_API_URL`
+- `VITE_BACKEND_URL`
 - `VITE_FETCH_TIMEOUT_MS`
 - `VITE_FETCH_RETRIES`
 - `VITE_ANALYTICS_ENDPOINT`
+- `PORT`
+- `CLIENT_ORIGIN`
+- `AUTH_SECRET`
+- `DATA_DIR`
+
+## Custom backend
+- `npm run dev:api` starts the Node API on `http://localhost:3001`.
+- The backend stores data in `data/geoquiz.sqlite` by default.
+- Guest quiz completions are automatically submitted to the leaderboard with generated names like `Guest-A1B2`.
 
 ## Deployment security headers
 Netlify headers are configured in [GEOQUIZ/netlify.toml](netlify.toml).

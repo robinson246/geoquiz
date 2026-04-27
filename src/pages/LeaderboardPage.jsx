@@ -16,6 +16,7 @@ export default function LeaderboardPage({ leaderboardEntries, onBack, formatTime
 						<thead>
 							<tr>
 								<th>#</th>
+								<th>Player</th>
 								<th>Score</th>
 								<th>Accuracy</th>
 								<th>Mode</th>
@@ -26,6 +27,7 @@ export default function LeaderboardPage({ leaderboardEntries, onBack, formatTime
 							{leaderboardEntries.slice(0, 10).map((entry, index) => (
 								<tr key={entry.id}>
 									<td>{index + 1}</td>
+									<td>{entry.displayName || entry.userName || 'Guest'}</td>
 									<td>
 										{entry.score}/{entry.total}
 									</td>

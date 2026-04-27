@@ -48,13 +48,31 @@ export default [
 		},
 	},
 	{
-		files: ['src/**/*.{test,spec}.{js,jsx}'],
+		files: ['src/**/*.{test,spec}.{js,jsx}', 'src/**/*.test.jsx', 'src/**/*.spec.jsx'],
 		languageOptions: {
 			globals: {
 				describe: 'readonly',
 				it: 'readonly',
 				expect: 'readonly',
+				beforeEach: 'readonly',
+				vi: 'readonly',
 			},
+		},
+	},
+	{
+		files: ['server/**/*.js'],
+		languageOptions: {
+			ecmaVersion: 2022,
+			sourceType: 'module',
+			globals: {
+				Buffer: 'readonly',
+				console: 'readonly',
+				process: 'readonly',
+				URL: 'readonly',
+			},
+		},
+		rules: {
+			...js.configs.recommended.rules,
 		},
 	},
 ];

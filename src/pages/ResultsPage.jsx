@@ -1,6 +1,6 @@
-import ScoreBadge from '../components/ScoreBadge.js';
+import ScoreBadge from '../components/ScoreBadge.jsx';
 
-export default function ResultsPage({ score, quiz, mistakes, restartQuiz }) {
+export default function ResultsPage({ score, quiz, mistakes, restartQuiz, onBackToMenu }) {
 	const accuracy = quiz.length > 0 ? Math.round((score / quiz.length) * 100) : 0;
 
 	return (
@@ -30,9 +30,14 @@ export default function ResultsPage({ score, quiz, mistakes, restartQuiz }) {
 					</ul>
 				)}
 			</div>
-			<button className="primary-button" onClick={restartQuiz}>
-				Start New Attempt
-			</button>
+			<div className="results-actions">
+				<button className="primary-button" onClick={restartQuiz}>
+					Start New Attempt
+				</button>
+				<button className="secondary-button" onClick={() => onBackToMenu('Results saved. Back at the main menu.')}>
+					Back to Menu
+				</button>
+			</div>
 		</div>
 	);
 }

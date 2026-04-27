@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:api": "node server/server.js",
     "dev:local": "vite --host 127.0.0.1 --port 5175 --strictPort",
     "build": "vite build",
     "preview": "vite preview",
-    "lint": "eslint src --max-warnings=0",
+    "lint": "eslint src server --max-warnings=0",
     "lint:fix": "eslint src --fix",
     "format": "prettier --write src",
     "format:check": "prettier --check src",

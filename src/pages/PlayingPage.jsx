@@ -6,6 +6,7 @@ export default function PlayingPage({
 	handleAnswer,
 	feedback,
 	feedbackType,
+	onQuit,
 }) {
 	const capitalMedia =
 		typeof currentQuestion.media === 'string'
@@ -14,6 +15,12 @@ export default function PlayingPage({
 
 	return (
 		<div className="question-layout">
+			<div className="question-actions">
+				<button className="secondary-button slim" onClick={() => onQuit()}>
+					Quit Quiz
+				</button>
+			</div>
+
 			<div className="question-copy">
 				<span className="question-number">
 					Question {currentIndex + 1} of {quiz.length}

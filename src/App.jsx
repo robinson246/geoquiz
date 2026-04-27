@@ -1,16 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import LoadingPage from './pages/LoadingPage.js';
-import ErrorPage from './pages/ErrorPage.js';
-import ReadyHomePage from './pages/ReadyHomePage.js';
-import StudySetsPage from './pages/StudySetsPage.js';
-import UserHistoryPage from './pages/UserHistoryPage.js';
-import PlayingPage from './pages/PlayingPage.js';
-import ResultsPage from './pages/ResultsPage.js';
-import LeaderboardPage from './pages/LeaderboardPage.js';
-import AuthPage from './pages/AuthPage.js';
-import UserPage from './pages/UserPage.js';
-import { fetchJsonWithRetry } from './utils/api.js';
+import LoadingPage from './pages/LoadingPage.jsx';
+import ErrorPage from './pages/ErrorPage.jsx';
+import ReadyHomePage from './pages/ReadyHomePage.jsx';
+import StudySetsPage from './pages/StudySetsPage.jsx';
+import UserHistoryPage from './pages/UserHistoryPage.jsx';
+import PlayingPage from './pages/PlayingPage.jsx';
+import ResultsPage from './pages/ResultsPage.jsx';
+import LeaderboardPage from './pages/LeaderboardPage.jsx';
+import AuthPage from './pages/AuthPage.jsx';
+import UserPage from './pages/UserPage.jsx';
+import { backendApi, fetchJsonWithRetry } from './utils/api.js';
 import { logEvent } from './utils/telemetry.js';
 import FALLBACK_COUNTRIES from './data/fallbackCountries.js';
 
@@ -26,9 +26,9 @@ const BG_TILE_SIZE = 44;
 const DEFAULT_BG_TILE_COUNT = 320;
 const LEADERBOARD_STORAGE_KEY = 'geoquizLeaderboardV1';
 const USER_HISTORY_STORAGE_KEY = 'geoquizUserHistoryV1';
-const AUTH_USERS_STORAGE_KEY = 'geoquizAuthUsersV1';
-const AUTH_CURRENT_USER_STORAGE_KEY = 'geoquizCurrentUserV1';
 const COUNTRIES_CACHE_STORAGE_KEY = 'geoquizCountriesCacheV1';
+const QUIZ_SESSION_STORAGE_KEY = 'geoquizSessionV1';
+const AUTH_TOKEN_STORAGE_KEY = 'geoquizAuthTokenV1';
 
 const API_FALLBACK_URLS = [
 	API_URL,
@@ -37,6 +37,7 @@ const API_FALLBACK_URLS = [
 ];
 
 const STUDY_CONTINENT_OPTIONS = ['All', ...CONTINENT_OPTIONS];
+const MIN_LOADING_MS = import.meta.env.MODE === 'test' ? 0 : 1500;
 
 function shuffle(items) {
 	const copy = [...items];
@@ -125,16 +126,6 @@ function getBundledFallbackCountries() {
 	}));
 }
 
-async function hashPassword(password) {
-	if (!globalThis.crypto?.subtle) {
-		return password;
-	}
-
-	const encodedPassword = new TextEncoder().encode(password);
-	const digest = await globalThis.crypto.subtle.digest('SHA-256', encodedPassword);
-	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
 function buildChoices(correctAnswer, pool, key, limit = 4) {
 	const distractors = shuffle(
 		pool
@@ -200,23 +191,85 @@ function buildQuiz(
 	});
 }
 
+function sanitizeQuizMode(value) {
+	return value === 'flags' || value === 'capitals' || value === 'mixed' ? value : 'mixed';
+}
+
+function sanitizeQuestionCount(value) {
+	const parsed = Number(value);
+	return QUESTION_COUNT_OPTIONS.includes(parsed) ? parsed : DEFAULT_QUESTION_COUNT;
+}
+
+function sanitizeAllowedContinents(value) {
+	if (!Array.isArray(value)) {
+		return CONTINENT_OPTIONS;
+	}
+
+	const filtered = value.filter((continent) => CONTINENT_OPTIONS.includes(continent));
+	return filtered.length > 0 ? filtered : CONTINENT_OPTIONS;
+}
+
+function readStoredQuizSession() {
+	if (typeof window === 'undefined') {
+		return null;
+	}
+
+	try {
+		const raw = window.localStorage.getItem(QUIZ_SESSION_STORAGE_KEY);
+		if (!raw) {
+			return null;
+		}
+
+		const parsed = JSON.parse(raw);
+		return typeof parsed === 'object' && parsed !== null ? parsed : null;
+	} catch {
+		return null;
+	}
+}
+
+function getInitialQuizSession() {
+	const storedSession = readStoredQuizSession();
+	const quiz = Array.isArray(storedSession?.quiz) ? storedSession.quiz : [];
+	const phase =
+		(storedSession?.phase === 'playing' || storedSession?.phase === 'results') && quiz.length > 0
+			? storedSession.phase
+			: 'ready';
+	const maxIndex = Math.max(quiz.length - 1, 0);
+	const currentIndex = Number.isInteger(storedSession?.currentIndex)
+		? Math.max(0, Math.min(storedSession.currentIndex, maxIndex))
+		: 0;
+
+	return {
+		phase,
+		quiz,
+		quizMode: sanitizeQuizMode(storedSession?.quizMode),
+		questionCount: sanitizeQuestionCount(storedSession?.questionCount),
+		allowedContinents: sanitizeAllowedContinents(storedSession?.allowedContinents),
+		currentIndex,
+		score: Number.isFinite(storedSession?.score) ? Math.max(0, storedSession.score) : 0,
+		mistakes: Array.isArray(storedSession?.mistakes) ? storedSession.mistakes : [],
+	};
+}
+
 export default function App() {
+	const [initialQuizSession] = useState(() => getInitialQuizSession());
 	const [countries, setCountries] = useState([]);
-	const [quiz, setQuiz] = useState([]);
-	const [phase, setPhase] = useState('loading');
-	const [quizMode, setQuizMode] = useState('mixed');
-	const [questionCount, setQuestionCount] = useState(DEFAULT_QUESTION_COUNT);
-	const [allowedContinents, setAllowedContinents] = useState(CONTINENT_OPTIONS);
+	const [quiz, setQuiz] = useState(initialQuizSession.quiz);
+	const [phase, setPhase] = useState(initialQuizSession.phase);
+	const [quizMode, setQuizMode] = useState(initialQuizSession.quizMode);
+	const [questionCount, setQuestionCount] = useState(initialQuizSession.questionCount);
+	const [allowedContinents, setAllowedContinents] = useState(initialQuizSession.allowedContinents);
 	const [showOptionsPanel, setShowOptionsPanel] = useState(false);
 	const [showStudyCapitals, setShowStudyCapitals] = useState(true);
 	const [studyContinent, setStudyContinent] = useState('All');
+	const [dataStatus, setDataStatus] = useState('loading');
 	const [loadingProgress, setLoadingProgress] = useState(8);
-	const [currentIndex, setCurrentIndex] = useState(0);
-	const [score, setScore] = useState(0);
+	const [currentIndex, setCurrentIndex] = useState(initialQuizSession.currentIndex);
+	const [score, setScore] = useState(initialQuizSession.score);
 	const [selectedAnswer, setSelectedAnswer] = useState('');
 	const [feedback, setFeedback] = useState('');
 	const [feedbackType, setFeedbackType] = useState('');
-	const [mistakes, setMistakes] = useState([]);
+	const [mistakes, setMistakes] = useState(initialQuizSession.mistakes);
 	const [error, setError] = useState('');
 	const [menuNotice, setMenuNotice] = useState('');
 	const [backgroundTileCount, setBackgroundTileCount] = useState(() => getBackgroundTileCount());
@@ -225,9 +278,16 @@ export default function App() {
 	);
 	const [fadingTiles, setFadingTiles] = useState({});
 	const [leaderboardEntries, setLeaderboardEntries] = useState([]);
+	const [leaderboardHydrated, setLeaderboardHydrated] = useState(false);
 	const [userHistory, setUserHistory] = useState({});
-	const [registeredUsers, setRegisteredUsers] = useState([]);
+	const [userHistoryHydrated, setUserHistoryHydrated] = useState(false);
 	const [currentUser, setCurrentUser] = useState(null);
+	const [authHydrated, setAuthHydrated] = useState(false);
+	const [authToken, setAuthToken] = useState('');
+	const [activeSessionId, setActiveSessionId] = useState('');
+	const [studyProgress, setStudyProgress] = useState({});
+	const [loadRevision, setLoadRevision] = useState(0);
+	const answerTimeoutRef = useRef(null);
 	const location = useLocation();
 	const navigate = useNavigate();
 
@@ -271,10 +331,19 @@ export default function App() {
 			return ownedEntries;
 		}
 
-		return leaderboardEntries.length > 0 ? leaderboardEntries : [];
+		return [];
 	}, [currentUser, leaderboardEntries, userHistory]);
 
-	const hideFlagWall = phase === 'ready' && location.pathname === '/study-sets';
+	const canRenderQuizRoute = phase === 'playing' && quiz.length > 0 && Boolean(currentQuestion);
+	const canRenderResultsRoute = phase === 'results' && quiz.length > 0;
+	const hasActiveSession = canRenderQuizRoute || canRenderResultsRoute;
+
+	const showFlagWall = location.pathname === '/' || location.pathname === '/quiz';
+	const showHeroCard =
+		dataStatus !== 'loading' &&
+		dataStatus !== 'error' &&
+		location.pathname !== '/quiz' &&
+		location.pathname !== '/results';
 
 	useEffect(() => {
 		logEvent('page_view', {
@@ -282,59 +351,6 @@ export default function App() {
 			phase,
 		});
 	}, [location.pathname, phase]);
-
-	useEffect(() => {
-		if (phase === 'playing' && location.pathname !== '/quiz') {
-			navigate('/quiz', { replace: true });
-			return;
-		}
-
-		if (phase === 'results' && location.pathname !== '/results') {
-			navigate('/results', { replace: true });
-			return;
-		}
-
-		if (phase === 'ready') {
-			const readyPaths = new Set([
-				'/',
-				'/study-sets',
-				'/user-history',
-				'/leaderboard',
-				'/auth',
-				'/user',
-			]);
-			if (!readyPaths.has(location.pathname)) {
-				navigate('/', { replace: true });
-			}
-		}
-	}, [location.pathname, navigate, phase]);
-
-	useEffect(() => {
-		if (!currentUser?.email) {
-			return;
-		}
-
-		const storedEntries = userHistory[currentUser.email];
-		if (Array.isArray(storedEntries) && storedEntries.length > 0) {
-			return;
-		}
-
-		const hasTaggedEntries = leaderboardEntries.some((entry) => Boolean(entry.userEmail));
-		if (hasTaggedEntries || leaderboardEntries.length === 0) {
-			return;
-		}
-
-		setUserHistory((prev) => ({
-			...prev,
-			[currentUser.email]: leaderboardEntries
-				.map((entry) => ({
-					...entry,
-					userEmail: currentUser.email,
-					userName: currentUser.name,
-				}))
-				.slice(0, 100),
-		}));
-	}, [currentUser, leaderboardEntries, userHistory]);
 
 	useEffect(() => {
 		try {
@@ -348,6 +364,8 @@ export default function App() {
 			}
 		} catch {
 			setLeaderboardEntries([]);
+		} finally {
+			setLeaderboardHydrated(true);
 		}
 	}, []);
 
@@ -363,6 +381,8 @@ export default function App() {
 			}
 		} catch {
 			setUserHistory({});
+		} finally {
+			setUserHistoryHydrated(true);
 		}
 	}, []);
 
@@ -371,44 +391,23 @@ export default function App() {
 
 		async function loadAuthData() {
 			try {
-				const rawUsers = window.localStorage.getItem(AUTH_USERS_STORAGE_KEY);
-				if (rawUsers) {
-					const parsedUsers = JSON.parse(rawUsers);
-					if (Array.isArray(parsedUsers)) {
-						const normalizedUsers = await Promise.all(
-							parsedUsers.map(async (user) => {
-								if (user?.passwordHash) {
-									return user;
-								}
-
-								if (user?.password) {
-									return {
-										...user,
-										passwordHash: await hashPassword(user.password),
-									};
-								}
-
-								return user;
-							})
-						);
-
-						if (!cancelled) {
-							setRegisteredUsers(normalizedUsers);
-						}
-					}
-				}
-
-				const rawCurrentUser = window.localStorage.getItem(AUTH_CURRENT_USER_STORAGE_KEY);
-				if (rawCurrentUser) {
-					const parsedCurrentUser = JSON.parse(rawCurrentUser);
-					if (parsedCurrentUser?.email && !cancelled) {
-						setCurrentUser(parsedCurrentUser);
+				const storedToken = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || '';
+				if (storedToken) {
+					const response = await backendApi.getMe(storedToken);
+					if (!cancelled && response.user) {
+						setAuthToken(storedToken);
+						setCurrentUser(response.user);
 					}
 				}
 			} catch {
 				if (!cancelled) {
-					setRegisteredUsers([]);
+					setAuthToken('');
 					setCurrentUser(null);
+					window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+				}
+			} finally {
+				if (!cancelled) {
+					setAuthHydrated(true);
 				}
 			}
 		}
@@ -421,72 +420,161 @@ export default function App() {
 	}, []);
 
 	useEffect(() => {
+		if (!leaderboardHydrated) {
+			return;
+		}
+
 		try {
 			window.localStorage.setItem(LEADERBOARD_STORAGE_KEY, JSON.stringify(leaderboardEntries));
 		} catch {
 			// Ignore storage errors.
 		}
-	}, [leaderboardEntries]);
+	}, [leaderboardEntries, leaderboardHydrated]);
 
 	useEffect(() => {
+		if (!userHistoryHydrated) {
+			return;
+		}
+
 		try {
 			window.localStorage.setItem(USER_HISTORY_STORAGE_KEY, JSON.stringify(userHistory));
 		} catch {
 			// Ignore storage errors.
 		}
-	}, [userHistory]);
+	}, [userHistory, userHistoryHydrated]);
 
 	useEffect(() => {
-		if (!currentUser?.email) {
+		if (!authHydrated) {
 			return;
 		}
 
-		if (Array.isArray(currentUser.history) && currentUser.history.length > 0) {
-			return;
-		}
-
-		const accountRecord = registeredUsers.find((user) => user.email === currentUser.email);
-		const storedEntries = userHistory[currentUser.email];
-		const migratedHistory =
-			Array.isArray(accountRecord?.history) && accountRecord.history.length > 0
-				? accountRecord.history
-				: Array.isArray(storedEntries) && storedEntries.length > 0
-					? storedEntries
-					: [];
-
-		if (migratedHistory.length === 0) {
-			return;
-		}
-
-		setCurrentUser((current) =>
-			current
-				? {
-						...current,
-						history: migratedHistory,
-					}
-				: current
-		);
-	}, [currentUser, registeredUsers, userHistory]);
-
-	useEffect(() => {
 		try {
-			window.localStorage.setItem(AUTH_USERS_STORAGE_KEY, JSON.stringify(registeredUsers));
-		} catch {
-			// Ignore storage errors.
-		}
-	}, [registeredUsers]);
-
-	useEffect(() => {
-		try {
-			if (currentUser) {
-				window.localStorage.setItem(AUTH_CURRENT_USER_STORAGE_KEY, JSON.stringify(currentUser));
+			if (authToken) {
+				window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, authToken);
 			} else {
-				window.localStorage.removeItem(AUTH_CURRENT_USER_STORAGE_KEY);
+				window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
 			}
 		} catch {
 			// Ignore storage errors.
 		}
-	}, [currentUser]);
+	}, [authHydrated, authToken]);
+
+	useEffect(() => {
+		let cancelled = false;
+
+		async function loadLeaderboard() {
+			try {
+				const response = await backendApi.getLeaderboard();
+				if (!cancelled && Array.isArray(response.entries)) {
+					setLeaderboardEntries(response.entries);
+				}
+			} catch {
+				// Keep local fallback if API is unavailable.
+			}
+		}
+
+		loadLeaderboard();
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+
+	useEffect(() => {
+		if (!authToken || !currentUser?.email) {
+			return;
+		}
+
+		let cancelled = false;
+
+		async function loadUserData() {
+			try {
+				const [historyResponse, sessionResponse, progressResponse] = await Promise.all([
+					backendApi.getUserHistory(authToken),
+					backendApi.getActiveSession(authToken),
+					backendApi.getStudyProgress(authToken),
+				]);
+
+				if (cancelled) {
+					return;
+				}
+
+				if (Array.isArray(historyResponse.results)) {
+					setUserHistory((prev) => ({
+						...prev,
+						[currentUser.email]: historyResponse.results,
+					}));
+					setCurrentUser((current) =>
+						current ? { ...current, history: historyResponse.results } : current
+					);
+				}
+
+				if (sessionResponse.session && phase === 'ready') {
+					setActiveSessionId(sessionResponse.session.id);
+					setQuiz(sessionResponse.session.quiz || []);
+					setQuizMode(sanitizeQuizMode(sessionResponse.session.quizMode));
+					setQuestionCount(sanitizeQuestionCount(sessionResponse.session.questionCount));
+					setAllowedContinents(sanitizeAllowedContinents(sessionResponse.session.allowedContinents));
+					setCurrentIndex(sessionResponse.session.currentIndex || 0);
+					setScore(sessionResponse.session.score || 0);
+					setMistakes(sessionResponse.session.mistakes || []);
+					setPhase('playing');
+				}
+
+				if (Array.isArray(progressResponse.progress)) {
+					setStudyProgress(
+						progressResponse.progress.reduce((map, item) => {
+							map[item.countryCode] = item;
+							return map;
+						}, {})
+					);
+				}
+			} catch {
+				// User-specific persistence is optional while developing without the API.
+			}
+		}
+
+		loadUserData();
+		return () => {
+			cancelled = true;
+		};
+	}, [authToken, currentUser?.email, phase]);
+
+	useEffect(() => {
+		if (phase !== 'playing' && phase !== 'results') {
+			try {
+				window.localStorage.removeItem(QUIZ_SESSION_STORAGE_KEY);
+			} catch {
+				// Ignore storage errors.
+			}
+			return;
+		}
+
+		try {
+			window.localStorage.setItem(
+				QUIZ_SESSION_STORAGE_KEY,
+				JSON.stringify({
+					phase,
+					quiz,
+					quizMode,
+					questionCount,
+					allowedContinents,
+					currentIndex,
+					score,
+					mistakes,
+				})
+			);
+		} catch {
+			// Ignore storage errors.
+		}
+	}, [allowedContinents, currentIndex, mistakes, phase, questionCount, quiz, quizMode, score]);
+
+	useEffect(() => {
+		return () => {
+			if (answerTimeoutRef.current) {
+				window.clearTimeout(answerTimeoutRef.current);
+			}
+		};
+	}, []);
 
 	useEffect(() => {
 		let progressTimer;
@@ -495,7 +583,7 @@ export default function App() {
 			const loadingStart = Date.now();
 
 			try {
-				setPhase('loading');
+				setDataStatus('loading');
 				setLoadingProgress(8);
 				progressTimer = window.setInterval(() => {
 					setLoadingProgress((value) => (value < 92 ? value + Math.random() * 6 : value));
@@ -530,20 +618,18 @@ export default function App() {
 				}
 
 				setCountries(normalized);
-				const freshQuiz = buildQuiz(normalized, quizMode, questionCount, allowedContinents);
-				if (!freshQuiz.length) {
-					throw new Error('No quiz-ready countries were returned by the API.');
-				}
 
-				const remainingDelay = 1500 - (Date.now() - loadingStart);
+				const remainingDelay = MIN_LOADING_MS - (Date.now() - loadingStart);
 				if (remainingDelay > 0) {
 					await new Promise((resolve) => window.setTimeout(resolve, remainingDelay));
 				}
 
 				setLoadingProgress(100);
-				setQuiz(freshQuiz);
-				setPhase('ready');
+				setDataStatus('ready');
 				setError('');
+				if (initialQuizSession.phase !== 'playing' && initialQuizSession.phase !== 'results') {
+					setPhase('ready');
+				}
 				logEvent('countries_load_success', {
 					countryCount: normalized.length,
 					apiUrl: activeApiUrl,
@@ -556,50 +642,39 @@ export default function App() {
 					if (rawCached) {
 						const parsedCached = JSON.parse(rawCached);
 						if (Array.isArray(parsedCached) && parsedCached.length > 0) {
-							const cachedQuiz = buildQuiz(
-								parsedCached,
-								quizMode,
-								questionCount,
-								allowedContinents
-							);
-
-							if (cachedQuiz.length > 0) {
-								setCountries(parsedCached);
-								setQuiz(cachedQuiz);
-								setMenuNotice('Offline mode: loaded cached country data.');
-								setError('');
+							setCountries(parsedCached);
+							setMenuNotice('Offline mode: loaded cached country data.');
+							setError('');
+							setDataStatus('ready');
+							if (initialQuizSession.phase !== 'playing' && initialQuizSession.phase !== 'results') {
 								setPhase('ready');
-								loadedFromCache = true;
-								logEvent('countries_cache_fallback_used', {
-									countryCount: parsedCached.length,
-								});
 							}
+							loadedFromCache = true;
+							logEvent('countries_cache_fallback_used', {
+								countryCount: parsedCached.length,
+							});
 						}
 					}
 				} catch {
 					// Ignore cache parse errors.
 				}
 
-				const remainingDelay = 1500 - (Date.now() - loadingStart);
+				const remainingDelay = MIN_LOADING_MS - (Date.now() - loadingStart);
 				if (remainingDelay > 0) {
 					await new Promise((resolve) => window.setTimeout(resolve, remainingDelay));
 				}
 
 				if (!loadedFromCache) {
 					const bundledFallback = getBundledFallbackCountries();
-					const bundledQuiz = buildQuiz(
-						bundledFallback,
-						quizMode,
-						questionCount,
-						allowedContinents
-					);
 
-					if (bundledQuiz.length > 0) {
+					if (bundledFallback.length > 0) {
 						setCountries(bundledFallback);
-						setQuiz(bundledQuiz);
 						setMenuNotice('Offline mode: loaded bundled country set.');
 						setError('');
-						setPhase('ready');
+						setDataStatus('ready');
+						if (initialQuizSession.phase !== 'playing' && initialQuizSession.phase !== 'results') {
+							setPhase('ready');
+						}
 						logEvent('countries_bundled_fallback_used', {
 							countryCount: bundledFallback.length,
 						});
@@ -607,7 +682,8 @@ export default function App() {
 						setError(
 							'Unable to reach the countries API. Check your internet/VPN and try again.'
 						);
-						setPhase('error');
+						setDataStatus('error');
+						setPhase('ready');
 						logEvent('countries_load_error', { message: loadError.message || 'unknown' });
 					}
 				}
@@ -625,7 +701,7 @@ export default function App() {
 				window.clearInterval(progressTimer);
 			}
 		};
-	}, []);
+	}, [initialQuizSession.phase, loadRevision]);
 
 	useEffect(() => {
 		function handleResize() {
@@ -642,7 +718,7 @@ export default function App() {
 
 	useEffect(() => {
 		const pool = Array.from(new Set(countries.map((country) => country.flag).filter(Boolean)));
-		if (!pool.length) {
+		if (!showFlagWall || !pool.length) {
 			setBackgroundFlags(Array.from({ length: backgroundTileCount }, () => ''));
 			setFadingTiles({});
 			return;
@@ -652,11 +728,11 @@ export default function App() {
 			Array.from({ length: backgroundTileCount }, () => pool[randomInt(0, pool.length - 1)])
 		);
 		setFadingTiles({});
-	}, [countries, backgroundTileCount]);
+	}, [backgroundTileCount, countries, showFlagWall]);
 
 	useEffect(() => {
 		const pool = Array.from(new Set(countries.map((country) => country.flag).filter(Boolean)));
-		if (!pool.length) {
+		if (!showFlagWall || !pool.length) {
 			return undefined;
 		}
 
@@ -712,26 +788,91 @@ export default function App() {
 		return () => {
 			window.clearInterval(intervalId);
 		};
-	}, [countries]);
+	}, [countries, showFlagWall]);
 
-	function startQuiz() {
+	function retryLoadCountries() {
+		setError('');
+		setMenuNotice('');
+		setLoadRevision((value) => value + 1);
+	}
+
+	function clearAnswerTimeout() {
+		if (answerTimeoutRef.current) {
+			window.clearTimeout(answerTimeoutRef.current);
+			answerTimeoutRef.current = null;
+		}
+	}
+
+	function resetQuizFeedback() {
+		clearAnswerTimeout();
+		setSelectedAnswer('');
+		setFeedback('');
+		setFeedbackType('');
+	}
+
+	function abandonQuiz(notice = 'Quiz ended. You can start a new attempt anytime.') {
+		if (authToken && activeSessionId) {
+			backendApi.abandonSession(activeSessionId, authToken).catch(() => {});
+		}
+		resetQuizFeedback();
+		setQuiz([]);
+		setActiveSessionId('');
+		setCurrentIndex(0);
+		setScore(0);
+		setMistakes([]);
+		setPhase('ready');
+		setMenuNotice(notice);
+		navigate('/');
+	}
+
+	function resumeAttempt() {
+		if (phase === 'playing' && quiz.length > 0 && currentQuestion) {
+			navigate('/quiz');
+			return;
+		}
+
+		if (phase === 'results' && quiz.length > 0) {
+			navigate('/results');
+		}
+	}
+
+	async function startQuiz() {
 		const freshQuiz = buildQuiz(countries, quizMode, questionCount, allowedContinents);
 		if (!freshQuiz.length) {
-			setError('No quiz-ready countries match the selected options.');
-			setPhase('error');
+			setMenuNotice('No quiz-ready countries match the selected options.');
+			setShowOptionsPanel(true);
+			setPhase('ready');
+			navigate('/');
 			return;
 		}
 
 		setQuiz(freshQuiz);
 		setCurrentIndex(0);
 		setScore(0);
-		setSelectedAnswer('');
-		setFeedback('');
-		setFeedbackType('');
+		resetQuizFeedback();
 		setMistakes([]);
 		setMenuNotice('');
 		setShowOptionsPanel(false);
 		setPhase('playing');
+		if (authToken) {
+			try {
+				const response = await backendApi.createSession(
+					{
+						quizMode,
+						questionCount,
+						allowedContinents,
+						quiz: freshQuiz,
+						currentIndex: 0,
+						score: 0,
+						mistakes: [],
+					},
+					authToken
+				);
+				setActiveSessionId(response.session?.id || '');
+			} catch {
+				setActiveSessionId('');
+			}
+		}
 		navigate('/quiz');
 	}
 
@@ -776,7 +917,13 @@ export default function App() {
 	}
 
 	function signOutUser() {
+		if (authToken) {
+			backendApi.logOut(authToken).catch(() => {});
+		}
+		setAuthToken('');
 		setCurrentUser(null);
+		setActiveSessionId('');
+		setStudyProgress({});
 		setMenuNotice('Signed out.');
 		navigate('/');
 	}
@@ -790,30 +937,16 @@ export default function App() {
 			return { ok: false, message: 'Please complete all sign-up fields.' };
 		}
 
-		const exists = registeredUsers.some((user) => user.email === email);
-		if (exists) {
-			return { ok: false, message: 'An account with this email already exists.' };
+		try {
+			const response = await backendApi.signUp({ name, email, password });
+			setAuthToken(response.token || '');
+			setCurrentUser({ ...response.user, history: [] });
+			setMenuNotice('');
+			navigate('/user');
+			return { ok: true, message: 'Account created successfully.' };
+		} catch (error) {
+			return { ok: false, message: error.message || 'Unable to create account.' };
 		}
-
-		const newUser = {
-			id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-			name,
-			email,
-			passwordHash: await hashPassword(password),
-			createdAt: Date.now(),
-			history: [],
-		};
-
-		setRegisteredUsers((current) => [...current, newUser]);
-		setCurrentUser({
-			name: newUser.name,
-			email: newUser.email,
-			createdAt: newUser.createdAt,
-			history: [],
-		});
-		setMenuNotice('');
-		navigate('/user');
-		return { ok: true, message: 'Account created successfully.' };
 	}
 
 	async function handleLogIn(credentials) {
@@ -824,26 +957,19 @@ export default function App() {
 			return { ok: false, message: 'Please enter both email and password.' };
 		}
 
-		const passwordHash = await hashPassword(password);
-		const matchedUser = registeredUsers.find(
-			(user) => user.email === email && user.passwordHash === passwordHash
-		);
-		if (!matchedUser) {
-			return { ok: false, message: 'Invalid email or password.' };
+		try {
+			const response = await backendApi.logIn({ email, password });
+			setAuthToken(response.token || '');
+			setCurrentUser({ ...response.user, history: [] });
+			setMenuNotice('');
+			navigate('/user');
+			return { ok: true, message: 'Logged in successfully.' };
+		} catch (error) {
+			return { ok: false, message: error.message || 'Invalid email or password.' };
 		}
-
-		setCurrentUser({
-			name: matchedUser.name,
-			email: matchedUser.email,
-			createdAt: matchedUser.createdAt,
-			history: Array.isArray(matchedUser.history) ? matchedUser.history : [],
-		});
-		setMenuNotice('');
-		navigate('/user');
-		return { ok: true, message: 'Logged in successfully.' };
 	}
 
-	function addLeaderboardEntry(finalScore) {
+	async function addLeaderboardEntry(finalScore) {
 		const total = quiz.length || questionCount;
 		const accuracy = total > 0 ? Math.round((finalScore / total) * 100) : 0;
 		const modeLabel =
@@ -864,7 +990,46 @@ export default function App() {
 			playedAt: Date.now(),
 			userEmail: currentUser?.email ?? '',
 			userName: currentUser?.name ?? '',
+			displayName: currentUser?.name ?? 'Guest',
+			mistakes,
 		};
+
+		try {
+			const response = await backendApi.saveQuizResult(entry, authToken);
+			const savedEntry = response.result || entry;
+			setLeaderboardEntries((current) =>
+				[savedEntry, ...current]
+					.sort((a, b) => {
+						if (b.accuracy !== a.accuracy) {
+							return b.accuracy - a.accuracy;
+						}
+						if (b.score !== a.score) {
+							return b.score - a.score;
+						}
+						return b.playedAt - a.playedAt;
+					})
+					.slice(0, 30)
+			);
+
+			if (currentUser?.email) {
+				setUserHistory((prev) => ({
+					...prev,
+					[currentUser.email]: [savedEntry, ...(prev[currentUser.email] || [])].slice(0, 100),
+				}));
+				setCurrentUser((current) =>
+					current
+						? {
+								...current,
+								history: [savedEntry, ...(current.history || [])].slice(0, 100),
+								lastPlayedAt: savedEntry.playedAt,
+							}
+						: current
+				);
+			}
+			return;
+		} catch {
+			// Fall back to local persistence when the backend is unavailable.
+		}
 
 		setLeaderboardEntries((current) =>
 			[entry, ...current]
@@ -880,7 +1045,6 @@ export default function App() {
 				.slice(0, 30)
 		);
 
-		// Save to user history if logged in
 		if (currentUser && currentUser.email) {
 			const updatedHistory = [
 				entry,
@@ -894,14 +1058,6 @@ export default function App() {
 							lastPlayedAt: entry.playedAt,
 						}
 					: current
-			);
-
-			setRegisteredUsers((currentUsers) =>
-				currentUsers.map((user) =>
-					user.email === currentUser.email
-						? { ...user, history: updatedHistory, lastPlayedAt: entry.playedAt }
-						: user
-				)
 			);
 
 			setUserHistory((prev) => {
@@ -940,34 +1096,84 @@ export default function App() {
 			]);
 		}
 
-		window.setTimeout(() => {
-			setSelectedAnswer('');
-			setFeedback('');
-			setFeedbackType('');
+		answerTimeoutRef.current = window.setTimeout(async () => {
+			answerTimeoutRef.current = null;
+			resetQuizFeedback();
 			if (currentIndex + 1 >= quiz.length) {
 				const finalScore = isCorrect ? score + 1 : score;
-				addLeaderboardEntry(finalScore);
+				await addLeaderboardEntry(finalScore);
+				if (authToken && activeSessionId) {
+					backendApi.completeSession(activeSessionId, authToken).catch(() => {});
+					setActiveSessionId('');
+				}
 				setPhase('results');
 				navigate('/results');
 			} else {
-				setCurrentIndex((value) => value + 1);
+				const nextIndex = currentIndex + 1;
+				setCurrentIndex(nextIndex);
+				if (authToken && activeSessionId) {
+					backendApi
+						.updateSession(
+							activeSessionId,
+							{
+								quiz,
+								currentIndex: nextIndex,
+								score: isCorrect ? score + 1 : score,
+								mistakes: isCorrect
+									? mistakes
+									: [
+											...mistakes,
+											{
+												prompt: currentQuestion.prompt,
+												correct: currentQuestion.answer,
+												picked: choice,
+											},
+										],
+							},
+							authToken
+						)
+						.catch(() => {});
+				}
 			}
 		}, 900);
 	}
 
-	function restartQuiz() {
+	async function restartQuiz() {
 		if (!countries.length) {
 			return;
 		}
 		const freshQuiz = buildQuiz(countries, quizMode, questionCount, allowedContinents);
+		if (!freshQuiz.length) {
+			abandonQuiz('No quiz-ready countries match the selected options for a new attempt.');
+			return;
+		}
+
 		setQuiz(freshQuiz);
 		setCurrentIndex(0);
 		setScore(0);
-		setSelectedAnswer('');
-		setFeedback('');
-		setFeedbackType('');
+		resetQuizFeedback();
 		setMistakes([]);
 		setPhase('playing');
+		setMenuNotice('');
+		if (authToken) {
+			try {
+				const response = await backendApi.createSession(
+					{
+						quizMode,
+						questionCount,
+						allowedContinents,
+						quiz: freshQuiz,
+						currentIndex: 0,
+						score: 0,
+						mistakes: [],
+					},
+					authToken
+				);
+				setActiveSessionId(response.session?.id || '');
+			} catch {
+				setActiveSessionId('');
+			}
+		}
 		navigate('/quiz');
 	}
 
@@ -993,9 +1199,26 @@ export default function App() {
 		});
 	}
 
+	function toggleStudyBookmark(countryCode) {
+		if (!authToken) {
+			return;
+		}
+
+		const normalizedCode = countryCode.toUpperCase();
+		const nextProgress = {
+			...(studyProgress[normalizedCode] || { countryCode: normalizedCode }),
+			bookmarked: !studyProgress[normalizedCode]?.bookmarked,
+		};
+		setStudyProgress((current) => ({
+			...current,
+			[normalizedCode]: nextProgress,
+		}));
+		backendApi.saveStudyProgress(normalizedCode, nextProgress, authToken).catch(() => {});
+	}
+
 	return (
 		<main className={`app-shell ${phase === 'playing' ? 'play-screen' : ''}`}>
-			{!hideFlagWall && (
+			{showFlagWall && (
 				<div className="flag-wall" aria-hidden="true">
 					{backgroundFlags.map((flag, index) => (
 						<div key={`bg-tile-${index}`} className="flag-tile">
@@ -1024,7 +1247,7 @@ export default function App() {
 				</div>
 			)}
 
-			{phase !== 'playing' && phase !== 'results' && (
+			{showHeroCard && (
 				<section className="hero-card">
 					<div>
 						<h1 className="geo-title">GEOQUIZ</h1>
@@ -1050,7 +1273,7 @@ export default function App() {
 			)}
 
 			<section className="quiz-card">
-				{phase === 'playing' && (
+				{location.pathname === '/quiz' && canRenderQuizRoute && (
 					<div className="topbar">
 						<div>
 							<span className="section-label">Quiz progress</span>
@@ -1062,11 +1285,11 @@ export default function App() {
 					</div>
 				)}
 
-				{phase === 'loading' && <LoadingPage loadingProgress={loadingProgress} />}
-
-				{phase === 'error' && <ErrorPage error={error} onRetry={() => window.location.reload()} />}
-
-				{phase === 'ready' && (
+				{dataStatus === 'loading' && !hasActiveSession ? (
+					<LoadingPage loadingProgress={loadingProgress} />
+				) : dataStatus === 'error' && !hasActiveSession ? (
+					<ErrorPage error={error} onRetry={retryLoadCountries} />
+				) : (
 					<Routes>
 						<Route
 							path="/"
@@ -1087,6 +1310,9 @@ export default function App() {
 									allowedContinents={allowedContinents}
 									toggleContinent={toggleContinent}
 									menuNotice={menuNotice}
+									canResumeQuiz={phase === 'playing' && quiz.length > 0 && Boolean(currentQuestion)}
+									canReviewResults={phase === 'results' && quiz.length > 0}
+									onResumeQuiz={resumeAttempt}
 								/>
 							}
 						/>
@@ -1100,6 +1326,9 @@ export default function App() {
 									setStudyContinent={setStudyContinent}
 									studyContinentOptions={STUDY_CONTINENT_OPTIONS}
 									studyCountries={studyCountries}
+									studyProgress={studyProgress}
+									canSaveStudyProgress={Boolean(authToken)}
+									onToggleBookmark={toggleStudyBookmark}
 									onBack={backToMenuHome}
 								/>
 							}
@@ -1137,24 +1366,43 @@ export default function App() {
 								<UserPage user={currentUser} onBack={backToMenuHome} onOpenAuth={openAuthPage} />
 							}
 						/>
+						<Route
+							path="/quiz"
+							element={
+								canRenderQuizRoute ? (
+									<PlayingPage
+										currentIndex={currentIndex}
+										quiz={quiz}
+										currentQuestion={currentQuestion}
+										selectedAnswer={selectedAnswer}
+										handleAnswer={handleAnswer}
+										feedback={feedback}
+										feedbackType={feedbackType}
+										onQuit={abandonQuiz}
+									/>
+								) : (
+									<Navigate to={canRenderResultsRoute ? '/results' : '/'} replace />
+								)
+							}
+						/>
+						<Route
+							path="/results"
+							element={
+								canRenderResultsRoute ? (
+									<ResultsPage
+										score={score}
+										quiz={quiz}
+										mistakes={mistakes}
+										restartQuiz={restartQuiz}
+										onBackToMenu={abandonQuiz}
+									/>
+								) : (
+									<Navigate to={canRenderQuizRoute ? '/quiz' : '/'} replace />
+								)
+							}
+						/>
 						<Route path="*" element={<Navigate to="/" replace />} />
 					</Routes>
-				)}
-
-				{phase === 'playing' && currentQuestion && (
-					<PlayingPage
-						currentIndex={currentIndex}
-						quiz={quiz}
-						currentQuestion={currentQuestion}
-						selectedAnswer={selectedAnswer}
-						handleAnswer={handleAnswer}
-						feedback={feedback}
-						feedbackType={feedbackType}
-					/>
-				)}
-
-				{phase === 'results' && (
-					<ResultsPage score={score} quiz={quiz} mistakes={mistakes} restartQuiz={restartQuiz} />
 				)}
 			</section>
 		</main>

@@ -7,6 +7,9 @@ export default function StudySetsPage({
 	setStudyContinent,
 	studyContinentOptions,
 	studyCountries,
+	studyProgress,
+	canSaveStudyProgress,
+	onToggleBookmark,
 	onBack,
 }) {
 	const [countrySearch, setCountrySearch] = useState('');
@@ -66,11 +69,14 @@ export default function StudySetsPage({
 			<p className="menu-note">
 				Showing {filteredStudyCountries.length} countries
 				{studyContinent === 'All' ? '' : ` in ${studyContinent}`}.
+				{canSaveStudyProgress ? '' : ' Sign in to save bookmarks.'}
 			</p>
 
 			<div className="study-set-grid">
-				{filteredStudyCountries.map((country) => (
-					<article key={`study-${country.code}`} className="study-set-card">
+				{filteredStudyCountries.map((country) => {
+					const bookmarked = Boolean(studyProgress?.[country.code]?.bookmarked);
+					return (
+						<article key={`study-${country.code}`} className="study-set-card">
 						<img
 							className="study-flag"
 							src={country.flag}
@@ -82,8 +88,16 @@ export default function StudySetsPage({
 							<p className="study-capital">{country.capital || 'No capital listed'}</p>
 						)}
 						<p>{country.region}</p>
+						<button
+							className="secondary-button slim"
+							disabled={!canSaveStudyProgress}
+							onClick={() => onToggleBookmark(country.code)}
+						>
+							{bookmarked ? 'Bookmarked' : 'Bookmark'}
+						</button>
 					</article>
-				))}
+					);
+				})}
 			</div>
 		</div>
 	);

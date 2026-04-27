@@ -14,6 +14,9 @@ export default function ReadyHomePage({
 	allowedContinents,
 	toggleContinent,
 	menuNotice,
+	canResumeQuiz,
+	canReviewResults,
+	onResumeQuiz,
 }) {
 	return (
 		<div className="status-panel ready">
@@ -45,6 +48,11 @@ export default function ReadyHomePage({
 				<button className="primary-button" onClick={startQuiz}>
 					Play
 				</button>
+				{(canResumeQuiz || canReviewResults) && (
+					<button className="secondary-button" onClick={onResumeQuiz}>
+						{canResumeQuiz ? 'Resume Quiz' : 'Review Results'}
+					</button>
+				)}
 				<button className="secondary-button" onClick={showOptions}>
 					Options
 				</button>
